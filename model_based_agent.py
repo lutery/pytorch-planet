@@ -15,7 +15,15 @@ from gymnasium.wrappers import TimeLimit, PixelObservationWrapper, TransformObse
 from utils import *
 from planet import Planet
 
+'''
+Transition 是一个使用 Python 的 namedtuple 定义的数据结构，用来存储一次环境交互的数据。它包含三个字段：
 
+- observation：状态或观测值
+- action：采取的动作
+- reward：获得的奖励
+
+在基于 Planet 的实现中，Transition 用来保存每一步环境交互的记录，方便后续对学习过程进行采样和训练。
+'''
 Transition = namedtuple('Transition',
                         ('observation', 'action', 'reward'))
 
@@ -31,6 +39,7 @@ class ModelBasedLearner:
         # 也是一个世界模型
         self.world_model = Planet(params=self.params, action_dim=self.action_dim).to(self.d_type).to(self.device)
         print(f'Initialized {self.world_model} ({count_parameters(self.world_model)}) as the world-model')
+        # 直接对整个世界模型进行优化，和之前的dreamer不一样，dreamer是对每个模型进行分别优化
         self.optimizer = Adam(params=self.world_model.parameters(), lr=self.params['lr'], eps=self.params['adam_epsilon'])
         self.logger = SummaryWriter(comment=exp_tag)
 
@@ -125,14 +134,19 @@ class ModelBasedLearner:
         return processed_obs
 
     def collect_seed_episodes(self):
+        '''
+        随机动作预热缓冲区
+        '''
         print('\n')
         while len(self.replay_buffer.memory) < self.params['n_seed_episodes']:
+            # 打印当前收集的episode数量
             print(f'\rCollecting seed episodes ({1+len(self.replay_buffer.memory)}/{self.params["n_seed_episodes"]}) ... ', end='')
             prev_obs, _ = self.env.reset()
             episode_transitions = list()
             while True:
                 action = self.env.action_space.sample()
                 obs, reward, terminated, truncated, info = self.env.step(action)
+                # 这里存储的动作和观察处于同一个时间t
                 episode_transitions.append(
                     Transition(
                         observation=prev_obs,
@@ -183,11 +197,15 @@ class ModelBasedLearner:
 
     def learn_with_planet(self):
         global_step = 0
+        # 这里训练指定的步数吗？
         for learning_step in range(self.params['n_steps']):
             print(f'\n\nLearning step: {1+learning_step}/{self.params["n_steps"]}\n')
+            # 切换训练模式
             self.world_model.train()
+            # 进行 collect_interval 次的训练
             for update_step in range(self.params['collect_interval']):
                 print(f'\rFitting world model : ({update_step+1}/{self.params["collect_interval"]})', end='')
+                # 先进行采样
                 sampled_episodes = self.replay_buffer.sample(self.params['batch_size'])
                 dist_predicted = self.world_model(sampled_episodes=sampled_episodes)
                 loss, (recon_loss, kl_loss, reward_loss) = self.world_model.compute_loss(target=sampled_episodes, dist_predicted=dist_predicted)
@@ -201,6 +219,7 @@ class ModelBasedLearner:
                 self.logger.add_scalar('TrainLoss/reward_prediction', reward_loss, global_step)
                 global_step += 1
             print('\rUpdated world model!' + 50*' ')
+            # 每隔一定步数进行评估以及收集新的episode todo
             with torch.no_grad():
                 self.replay_buffer.push(self.collect_episode())
                 self.evaluate_learning(step=learning_step+1)
@@ -325,7 +344,7 @@ class ReplayBuffer:
         self.params = params
         self.d_type = get_dtype(self.params['fp_precision'])
         self.device = get_device(self.params['device'])
-        self.memory = list() # 用list存储
+        self.memory = list() # 用list存储，这里存储的维度是一个游戏周期所有的步数
 
     def __len__(self):
         return len(self.memory)
@@ -335,16 +354,29 @@ class ReplayBuffer:
             self.memory.append(episode)
 
     def sample(self, n):
+        '''
+        这里传入的batch_size，采样batch_size个样本数据
+        '''
+        # 随机选择batch_size个episode
         sampled_indices = np.random.choice(len(self.memory), n, replace=True)
+        # chunked_episodes看起来也是一个连续的片段
         chunked_episodes = list()
         for ep_idx in sampled_indices:
+            # 随机选择一个起始位置
             start_idx = np.random.randint(low=0, high=len(self.memory[ep_idx])-self.params['chunk_length'])
+            # 将选择连续的chunk_length个数据添加到chunked_episodes中
             chunked_episodes.append(self.memory[ep_idx][start_idx:start_idx+self.params['chunk_length']])
+        # 此时chunked_episodes是一个list，里面存储的是每个episode的连续片段
         serialized_episodes = self.serialize_episode(chunked_episodes)
         return serialized_episodes
 
     def serialize_episode(self, list_episodes):
+        '''
+        return 返回一个字典，里面存储的是每个episode的observation、action、reward
+        '''
+
         batched_ep_obs, batched_ep_action, batched_ep_reward = list(), list(), list()
+        # 拆分每个episode的observation、action、reward到独立的缓存list中，list的每个元素是一个连续的obs、action、erward tensor
         for episode in list_episodes:
             ep_obs = torch.stack([transition.observation for transition in episode])
             ep_action = torch.stack([transition.action for transition in episode])
@@ -352,6 +384,10 @@ class ReplayBuffer:
             batched_ep_obs.append(ep_obs)
             batched_ep_action.append(ep_action)
             batched_ep_reward.append(ep_reward)
+        # 最后将所有的list转换为tensor
+        # batched_ep_obs shape 是（batch_size， chunk_length， visual_resolution， visual_resolution， channels）
+        # batched_ep_action shape 是（batch_size， chunk_length， action_dim）
+        # batched_ep_reward shape 是（batch_size， chunk_length， 1）
         batched_ep_obs = torch.stack(batched_ep_obs).to(self.d_type).to(self.device)
         batched_ep_action = torch.stack(batched_ep_action).to(self.d_type).to(self.device)
         batched_ep_reward = torch.stack(batched_ep_reward).to(self.d_type).to(self.device)

@@ -131,6 +131,11 @@ class DecoderModel(nn.Module):
 
 class RewardModel(nn.Module):
     def __init__(self, params):
+        '''
+        params: 整个训练的参数
+
+        网络结构比较简单，只是一个全连接网络，输入维度为 h_dim + z_dim，输出维度为 1。应该是直接预测奖励值。
+        '''
         super(RewardModel, self).__init__()
         self.params = params
         self.reward_net = FeedForwardNet(

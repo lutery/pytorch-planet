@@ -4,14 +4,14 @@ defaults:
   rng_seed: 7321                      # seed for random number generators
   fp_precision: 32                    # floating point precision (either 16 or 32)
   device: 'cuda'                      # computation device ('cpu', 'cuda', 'cuda:0' etc.)
-  n_seed_episodes: 5                  # number of seed episodes
+  n_seed_episodes: 5                  # number of seed episodes 预热收集多少次游戏完整周期的数据
   action_repeat: 1                    # action repeat (excluding the 1st action)
   eval_gif_freq: 10                   # evaluation gif creation frequency (after how many episodes)
   vp_eval_freq: 10                    # video-prediction evaluation frequency (after how many episodes)
 
   # Training
-  n_steps: 1000                       # number of learning (model-fitting and data-collection) steps
-  collect_interval: 100               # number of WM updates before collecting a new episode
+  n_steps: 1000                       # number of learning (model-fitting and data-collection) steps；n_steps 参数指定了整个训练过程中需要执行的“学习步骤”的总数量
+  collect_interval: 100               # number of WM updates before collecting a new episode 在每个学习步骤中，模型会先进行一系列的更新（根据 collect_interval 设定的更新次数），然后收集一条新的训练数据（一个完整的 episode）
   batch_size: 50                      # training batch size
   chunk_length: 50                    # length of each sampled episode from experience buffer
   planning_horizon: 12                # planning horizon
