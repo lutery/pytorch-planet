@@ -30,9 +30,9 @@ defaults:
 
   # Model params
   feat_dim: 1024                      # size of flattened CNN features from the encoder
-  h_dim: 200                          # dimension of deterministic state
-  z_dim: 30                           # dimension of stochastic state
-  n_ff_layers: 2                      # number of layer in the feed-forward networks
+  h_dim: 200                          # dimension of deterministic state，循环神经网络的输出温度 # 确定性状态的维度  
+  z_dim: 30                           # dimension of stochastic state，循环神经网络的输入维度
+  n_ff_layers: 2                      # number of layer in the feed-forward networks # 随机性状态的维度  
   min_std: 1e-2                       # minimum standard deviation of the stochastic states
 
 

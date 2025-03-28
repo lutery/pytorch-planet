@@ -7,6 +7,12 @@ from torch.distributions import Normal, Independent
 
 class EncoderModel(nn.Module):
     def __init__(self, params):
+        '''
+        parameters: 整个训练的参数
+
+        网络结构比较简单，只是一个 CNN 网络，输入维度为 3（RGB 图像），输出维度为 256。
+        输入3 * 64 * 64 ，输出 256 * 2 * 2。
+        '''
         super(EncoderModel, self).__init__()
         self.params = params
         self.encoder_net = nn.Sequential(
@@ -22,12 +28,18 @@ class EncoderModel(nn.Module):
 
     def forward(self, obs):
         encoded_obs = self.encoder_net(obs)
+        # 这行代码使用了 [einops](https://einops.rocks/) 库中的 `rearrange` 函数，将原本形状为 `[batch, channel, height, width]` 的张量展开（flatten）成形状为 `[batch, channel * height * width]` 的张量。这通常用于将卷积层的输出扁平化，以便后续通过全连接层（或其他处理）使用。
         encoded_obs = eop.rearrange(encoded_obs, 'b c h w -> b (c h w)')
         return encoded_obs
 
 
 class RepresentationModel(nn.Module):
     def __init__(self, params):
+        '''
+        parameters: 整个训练的参数
+
+        网络结构比较简单，只是一个全连接网络，输入维度为 h_dim + feat_dim，输出维度为 2 * z_dim。
+        '''
         super(RepresentationModel, self).__init__()
         self.params = params
         self.repr_net = FeedForwardNet(
@@ -47,8 +59,15 @@ class RepresentationModel(nn.Module):
 
 class RecurrentModel(nn.Module):
     def __init__(self, params, action_dim):
+        '''
+        params: 整个训练的参数
+        action_dim: 动作的维度
+
+        网络结构比较简单，只是一个 GRU 网络，输入维度为 z_dim + action_dim，输出维度为 h_dim。
+        '''
         super(RecurrentModel, self).__init__()
         self.params = params
+        # GRU 网络的输入维度为 z_dim + action_dim
         self.gru_net = nn.GRUCell(input_size=self.params['z_dim']+action_dim, hidden_size=self.params['h_dim'])
 
     def forward(self, h_state, z_state, action):
@@ -59,6 +78,11 @@ class RecurrentModel(nn.Module):
 
 class TransitionModel(nn.Module):
     def __init__(self, params):
+        '''
+        parameters: 整个训练的参数
+
+        网络结构比较简单，只是一个全连接网络，输入维度为 h_dim，输出维度为 2 * z_dim。
+        '''
         super(TransitionModel, self).__init__()
         self.params = params
         self.transition_net = FeedForwardNet(
@@ -77,6 +101,12 @@ class TransitionModel(nn.Module):
 
 class DecoderModel(nn.Module):
     def __init__(self, params):
+        '''
+        params : 整个训练的参数
+
+        网络有一个全连接层，将 h_state 和 z_state 连接起来，然后通过一系列的反卷积层将其解码为与环境观测相对应的重构输出。
+        也就是输出为 3 * 64 * 64 的图像。
+        '''
         super(DecoderModel, self).__init__()
         self.params = params
         self.fc_net = nn.Linear(in_features=self.params['h_dim']+self.params['z_dim'], out_features=1024)
@@ -119,6 +149,16 @@ class RewardModel(nn.Module):
 
 class FeedForwardNet(nn.Module):
     def __init__(self, input_dim, output_dim, hidden_dim, n_layers):
+        '''
+        前向传播网络
+
+        param input_dim: 输入维度
+        param output_dim: 输出维度
+        param hidden_dim: 隐藏层维度
+        param n_layers: 隐藏层的层数
+        
+        '''
+
         super(FeedForwardNet, self).__init__()
         self.to_hidden = nn.Sequential(
             nn.Linear(in_features=input_dim, out_features=hidden_dim),

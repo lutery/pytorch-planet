@@ -15,11 +15,28 @@ from utils import get_device, get_dtype
 
 class Planet(nn.Module):
     def __init__(self, params, action_dim):
+        '''
+        parameters: 整个训练的参数
+        action_dim: 动作的维度
+        '''
+
         super(Planet, self).__init__()
         self.params = params
         self.d_type = get_dtype(self.params['fp_precision'])
         self.device = get_device(self.params['device'])
         self.action_dim = action_dim
+        '''
+        这些模型在 PlaNet 框架中各有分工，简要说明如下：
+
+        1. **EncoderModel**: 负责将观察（像素图像）编码为紧凑的特征向量，减少原始输入的维度。  
+        2. **RepresentationModel**: 使用编码后的特征向量与先前的隐藏状态来生成后验分布 (posterior)，表示当前时刻的潜在状态。  
+        3. **TransitionModel**: 生成先验分布 (prior)，描述在未观测到当前帧情况下，对潜在状态的预测。  
+        4. **DecoderModel**: 将隐藏状态与潜在状态解码回与环境观测相对应的重构输出。  
+        5. **RewardModel**: 从隐藏状态和潜在状态预测当前时刻的奖励，以便在学习及规划过程中使用。  
+        6. **RecurrentModel**: 按序列更新并维护隐藏状态，结合潜在状态和动作来捕捉时间上的依赖关系。
+
+        todo 描述这几个网络之间的数据流通情况
+        '''
         self.rnn_model = RecurrentModel(params=self.params, action_dim=self.action_dim)
         self.obs_encoder = EncoderModel(params=self.params)
         self.repr_model = RepresentationModel(params=self.params)

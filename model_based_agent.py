@@ -23,16 +23,23 @@ Transition = namedtuple('Transition',
 class ModelBasedLearner:
     def __init__(self, params):
         self.params = params
+        # 浮点数据精度16位、32位还是8位
         self.d_type = get_dtype(self.params['fp_precision'])
         self.device = get_device(self.params['device'])
         exp_tag, self.env, self.action_dim = self.get_env()
         self.replay_buffer = ReplayBuffer(params=self.params)
+        # 也是一个世界模型
         self.world_model = Planet(params=self.params, action_dim=self.action_dim).to(self.d_type).to(self.device)
         print(f'Initialized {self.world_model} ({count_parameters(self.world_model)}) as the world-model')
         self.optimizer = Adam(params=self.world_model.parameters(), lr=self.params['lr'], eps=self.params['adam_epsilon'])
         self.logger = SummaryWriter(comment=exp_tag)
 
     def get_env(self):
+        '''
+        创建环境
+
+        return 环境的标识、环境、动作维度
+        '''
         if self.params['api_name'] == 'gym':
             return self.get_gym_env()
         elif self.params['api_name'] == 'dmc':
@@ -41,11 +48,21 @@ class ModelBasedLearner:
             raise NotImplementedError(f'{self.params["api_name"]} is not implemented')
         
     def get_gym_env(self):
+        '''
+        return 环境的标识、环境、动作维度
+        '''
+
         exp_tag = '_' + self.params['env_name'].lower() + '_'
+        # 创建原始环境
         env = gym.make(self.params['env_name'], render_mode='rgb_array')
+        # 设置动作重复的次数，有点像跳帧
         env = ActionRepeat(env, n_repeat=self.params['action_repeat'])
+        # 设置最大的episode步数，防止无限循环
         env = TimeLimit(env, max_episode_steps=self.params['max_episode_step'])
+        # 将观察值转换为RGB像素？todo 查看加入了这个之后的效果
+        # PixelObservationWrapper 将像素图像作为环境的主要观测值（observation），并将其存储在字典中（通常键为 'pixels'），从而统一了观测值的接口。
         env = PixelObservationWrapper(env)
+        # 是 gymnasium.wrappers 提供的一个环境包装器，其作用是对环境的观测值（observation）进行自定义的变换或处理。它允许用户通过传入一个自定义的函数，对环境返回的观测值进行动态修改
         env = TransformObservation(env, lambda obs: self.process_gym_observation(obs['pixels']))
         env.reset(seed=self.params['rng_seed'])
         action_dim = env.action_space.shape[0]
@@ -73,15 +90,26 @@ class ModelBasedLearner:
         return exp_tag, env, action_dim
 
     def process_gym_observation(self, raw_obs):
-        bits = self.params['pixel_bit']
-        visual_resolution = self.params['observation_resolution']
+        '''
+        主要实现：缩放、量化、归一化、转换为tensor
+
+        量化再归一化主要是为了将原始像素值分成更少的离散级别，然后映射到 [-0.5, 0.5]。如果直接将 8 位整数 (0–255) 线性缩放到 [-0.5, 0.5]，会跳过量化步骤，观测值仍会保留浮点表示；通过先量化再归一化，可以强制像素只有较少的离散级别，从而更好地模拟低精度输入或起到正则化的效果。
+        '''
+        bits = self.params['pixel_bit'] # 这里貌似是对像素进行量化，不采用8bit存储，todo
+        visual_resolution = self.params['observation_resolution'] # 图像分辨率，即缩放图像大小
+        # 先对观察进行缩放，shape：（visual_resolution, visual_resolution， chanels）
         resized_obs = cv2.resize(raw_obs, dsize=(visual_resolution, visual_resolution), interpolation=cv2.INTER_AREA)
         bins = 2 ** bits
+        # 将图像转换为浮点数
         norm_ob = np.float16(resized_obs)
         if bits < 8:
+            # 对图像进行量化
             norm_ob = np.floor(norm_ob / 2 ** (8 - bits))
+        # 量化后进行归一化到[-0.5, 0.5]之间
         norm_ob = (norm_ob / bins) - 0.5
+        # 转换为tensor
         processed_obs = torch.tensor(norm_ob, dtype=self.d_type)
+        # 我感觉这里是将通道放在前面，也就是将（visual_resolution, visual_resolution， chanels）转换为（chanels， visual_resolution, visual_resolution）
         processed_obs = processed_obs.transpose(0, 2)
         return processed_obs
 
@@ -288,11 +316,16 @@ class ModelBasedLearner:
 
 
 class ReplayBuffer:
+    '''
+    
+    应该是重放缓冲区
+    '''
+
     def __init__(self, params):
         self.params = params
         self.d_type = get_dtype(self.params['fp_precision'])
         self.device = get_device(self.params['device'])
-        self.memory = list()
+        self.memory = list() # 用list存储
 
     def __len__(self):
         return len(self.memory)
