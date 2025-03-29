@@ -161,27 +161,42 @@ class ModelBasedLearner:
         print(f'\rCollected {self.params["n_seed_episodes"]} episodes as initial seed data!')
 
     def collect_episode(self):
+        '''
+        收集新的episode
+        '''
         print('\rCollecting a new episode with CEM-based planning ...', end='')
         self.world_model.eval()
+        # 重置环境
         prev_obs, _ = self.env.reset()
+        # 获取一个初始的确定性隐藏状态
         h_state = self.world_model.get_init_h_state(batch_size=1)
         episode_transitions = list()
+        # 收集一次完整游戏周期的数据
         while True:
             # Inject observation noise
+            # 这里的噪声是一个高斯噪声，均值为0，方差为1
+            # 将噪声进行缩放后，使其范围满足和观察空间一致，因为高斯噪声本身就分布在0附近的左右，所以只需要使用正数缩放即可
+            # 这行代码通过生成与 input_obs 同形状的标准正态分布噪声，并用 (1/2^(pixel_bit)) 缩放后加到 input_obs 上，从而为输入观测值注入噪声。这样做可以模拟低位深像素的量化效应或者作为数据正则化的一种手段。
+            # 提高代码鲁棒性
             noisy_prev_obs = (1/pow(2, self.params['pixel_bit']))*torch.randn_like(prev_obs) + prev_obs
-            # Get posterior states using observation
+            # Get posterior states using observation 获取编码后的观察
             encoded_obs = self.world_model.obs_encoder(noisy_prev_obs.unsqueeze(dim=0).to(self.device))
+            # 根据上一个隐藏状态和编码后的观察生成一个后验分布
             posterior_z = self.world_model.repr_model(h_state, encoded_obs)
+            # 对后验分布进行采样，得到一个潜在状态
+            # shape = （batch_size， z_dim）
             z_state = posterior_z.sample()
             # Get best action by planning in latent space through open-loop prediction
             with torch.no_grad():
+                # 预测动作
                 action = self.plan_action_with_cem(h_state, z_state)
             exploration_noise = Normal(loc=0.0, scale=self.params['action_epsilon']).sample(sample_shape=torch.Size(action.shape)).to(self.d_type).to(self.device)
-            noisy_action = action + exploration_noise
+            noisy_action = action + exploration_noise # 对动作加入噪声，这里可以看出其针对连续动作空间，对离散动作空间不支持
+            # 执行动作
             obs, reward, terminated, truncated, info = self.env.step(noisy_action.to('cpu').numpy())
-            # Get next latent state
+            # Get next latent state 预测下一个确定性隐藏状态
             h_state = self.world_model.rnn_model(h_state, z_state, noisy_action.unsqueeze(dim=0))
-            # Save environment transition
+            # Save environment transition 将本次的动作收集起来
             episode_transitions.append(
                 Transition(
                     observation=prev_obs,
@@ -189,6 +204,7 @@ class ModelBasedLearner:
                     reward=torch.tensor([reward], dtype=self.d_type)
                 )
             )
+            # 深拷贝，防止影响
             prev_obs = copy.deepcopy(obs)
             if terminated or truncated:
                 break
@@ -207,12 +223,16 @@ class ModelBasedLearner:
                 print(f'\rFitting world model : ({update_step+1}/{self.params["collect_interval"]})', end='')
                 # 先进行采样
                 sampled_episodes = self.replay_buffer.sample(self.params['batch_size'])
+                # 对采样的每个时间步进行预测
                 dist_predicted = self.world_model(sampled_episodes=sampled_episodes)
+                # 计算损失
                 loss, (recon_loss, kl_loss, reward_loss) = self.world_model.compute_loss(target=sampled_episodes, dist_predicted=dist_predicted)
                 loss.backward()
+                # 梯度求导
                 nn.utils.clip_grad_value_(self.world_model.parameters(), clip_value=self.params['max_grad_norm'])
                 self.optimizer.step()
                 self.optimizer.zero_grad()
+                # 记录损失
                 self.logger.add_scalar('Reward/max_from_train_batch', sampled_episodes['reward'].max(), global_step)
                 self.logger.add_scalar('TrainLoss/obs_recon', recon_loss, global_step)
                 self.logger.add_scalar('TrainLoss/kl_div', kl_loss, global_step)
@@ -221,35 +241,47 @@ class ModelBasedLearner:
             print('\rUpdated world model!' + 50*' ')
             # 每隔一定步数进行评估以及收集新的episode todo
             with torch.no_grad():
+                # 进行数据采样，采样的同时会对预测的奖励、动作、观察加入噪声
                 self.replay_buffer.push(self.collect_episode())
                 self.evaluate_learning(step=learning_step+1)
                 self.evaluate_video_prediction(step=learning_step+1)
 
     def evaluate_learning(self, step):
+        '''
+        评估学习网络
+        '''
         print('\rEvaluating learning progress ...', end='')
-        self.world_model.eval()
-        prev_obs, _ = self.env.reset()
-        h_state = self.world_model.get_init_h_state(batch_size=1)
+        self.world_model.eval() # 进入评估模式
+        prev_obs, _ = self.env.reset() # 重置游戏环境
+        h_state = self.world_model.get_init_h_state(batch_size=1) # 获取新的起始确定性隐藏状态
+        # observed_frames保存游戏观察
+        # reconstructed_frames保存预测的游戏观察
         observed_frames, reconstructed_frames = list(), list()
         ep_reward = 0
         while True:
             observed_frames.append(prev_obs)
             # Get posterior states using observation
+            # 对观察进行编码
             encoded_obs = self.world_model.obs_encoder(prev_obs.unsqueeze(dim=0).to(self.device))
+            # 得到随机后验分布
             posterior_z = self.world_model.repr_model(h_state, encoded_obs)
+            # 根据后验状态获取潜在状态
             z_state = posterior_z.sample()
             # Get best action by planning in latent space through open-loop prediction
+            # 预测最好的动作
             action = self.plan_action_with_cem(h_state, z_state)
             obs, reward, terminated, truncated, info = self.env.step(action.to('cpu').numpy())
             ep_reward += reward
             # Reconstruct observation
+            # 根据确定性隐藏状态和潜在状态对观察进行解码，重构prev_obs
             recon_obs = self.world_model.decoder_model(h_state, z_state).mean
             reconstructed_frames.append(recon_obs.squeeze())
-            # Get next latent state
+            # Get next latent state 预测下一个确定性隐藏状态
             h_state = self.world_model.rnn_model(h_state, z_state, action.unsqueeze(dim=0))
             prev_obs = copy.deepcopy(obs)
             if terminated or truncated:
                 break
+        # 记录游戏观察以及重构的游戏观察
         observed_frames = torch.stack(observed_frames).unsqueeze(dim=0) + 0.5
         reconstructed_frames = torch.clip(torch.stack(reconstructed_frames).unsqueeze(dim=0) + 0.5, min=0.0, max=1.0)
         self.logger.add_scalar('Reward/test_episodes', ep_reward, step)
@@ -261,72 +293,114 @@ class ModelBasedLearner:
             print('\rLearning progress evaluation is complete!')
 
     def evaluate_video_prediction(self, step):
+        '''
+        进行模型预测观察的一次评估，应该是全部都是由模型对未来进行走势进行评估
+        '''
         if step % self.params['vp_eval_freq'] == 0:
             print('\rEvaluating video prediction ability ...', end='')
-            n_context_frames = 5
+            n_context_frames = 5 # 预测的帧数，这里仅预测5帧
             n_predicted_frames = 50
             self.world_model.eval()
+            # 获取初始化观察
             prev_obs, _ = self.env.reset()
+            # 初始化确定性隐藏状态
             h_state = self.world_model.get_init_h_state(batch_size=1)
 
+            # observed_frames存储真实观察
             observed_frames, predicted_frames = list(), list()
             observed_frames.append(prev_obs)
             # Feed context
             for _ in range(n_context_frames):
+                # 对环境进行编码
                 encoded_obs = self.world_model.obs_encoder(prev_obs.unsqueeze(dim=0).to(self.device))
+                # 生成后验状态分布
                 posterior_z = self.world_model.repr_model(h_state, encoded_obs)
+                # 采样后验分布，也就是随机性隐藏状态
                 z_state = posterior_z.sample()
                 # Get best action by planning in latent space through open-loop prediction
+                # 获取预测的未来最好动作
                 action = self.plan_action_with_cem(h_state, z_state)
+                # 执行动作
                 obs, reward, terminated, truncated, info = self.env.step(action.to('cpu').numpy())
                 observed_frames.append(obs)
                 # Reconstruct observation
+                # 对观察进行重构预测，并存储在predicted_frames
                 recon_obs = self.world_model.decoder_model(h_state, z_state).mean
                 predicted_frames.append(recon_obs.squeeze())
+                # 得到下一个的确定性状态
                 h_state = self.world_model.rnn_model(h_state, z_state, action.unsqueeze(dim=0))
                 prev_obs = copy.deepcopy(obs)
 
-                # Generate prediction
+                # Generate prediction 预测未来的5帧的观察变化
                 for _ in range(n_predicted_frames):
+                    # 获取先验状态分布
                     prior_z = self.world_model.transition_model(h_state)
+                    # 获取随机性隐藏状态
                     z_state = prior_z.sample()
+                    # 预测未来最好的动作
                     action = self.plan_action_with_cem(h_state, z_state)
+                    # 执行动作
                     obs, reward, terminated, truncated, info = self.env.step(action.to('cpu').numpy())
+                    # 存储o真实obs
                     observed_frames.append(obs)
                     # Reconstruct observation
+                    # 存储预测的obs，这里的预测obs就和真实的obs没有关系了，存粹的预测了
                     recon_obs = self.world_model.decoder_model(h_state, z_state).mean
                     predicted_frames.append(recon_obs.squeeze())
+                    # 获取下一个确定性状态
                     h_state = self.world_model.rnn_model(h_state, z_state, action.unsqueeze(dim=0))
-
+            
+            # 将观察重构到0～1，。合并obs帧
             observed_frames = 0.5 + torch.stack(observed_frames[:-1]).to(self.device)
+            # 将预测的观察重构到0～1，合并obs帧
             predicted_frames = torch.clip(0.5 + torch.stack(predicted_frames), min=0.0, max=1.0)
+            # 将真实帧和预测帧对比合并起来
             overlay_frames = torch.clip(0.5*(1 - observed_frames) + 0.5*predicted_frames, min=0.0, max=1.0)
 
+            # 将以上三个观察帧合并起来并记录到tensorboard中
             combined_frame = torch.cat([observed_frames, predicted_frames, overlay_frames], dim=3).unsqueeze(dim=0)
             self.logger.add_video(f'VideoPrediction/after_training_step_{step}', combined_frame.transpose(3, 4))
             print('\rVideo prediction evaluation is complete! Saved the episode!')
 
     def plan_action_with_cem(self, init_h_state, init_z_state):
+        '''
+        param init_h_state: 上一个隐藏状态
+        param init_z_state: 本次潜在状态，也就是后验分布的潜在状态
+
+        return: 根据不断的迭代得到认为的最好的动作
+        '''
+        # todo `planning_horizon` 参数指定了在规划过程中，评估候选动作序列时所预见的未来时间步数。在基于 Planet 算法的实现中，这个值控制了模型在每次规划时向前预测多少步，以便选择出最优的动作计划。
         action_dist = Independent(Normal(loc=torch.zeros(self.params['planning_horizon'], self.action_dim), scale=1.0), reinterpreted_batch_ndims=2)
+        # todo plan_optimization_iter参数指定了在规划过程中，通过多次迭代优化候选动作序列，以便搜索出最优计划的迭代次数。也就是说，规划器会在10次迭代中不断改进候选计划
         for _ in range(self.params['plan_optimization_iter']):
             reward_buffer = list()
+            # n_plans 数指定了在每次优化迭代中将采样多少条候选动作序列（计划）。也就是说，在每次规划过程中，会随机采样 1000 个动作序列，然后通过后续的评估机制选择出表现最佳的候选计划，以便在环境中执行
+            # 也就是说随机生成n_plans个状态分布进行选择评估？
             h_state = torch.clone(init_h_state).repeat(self.params['n_plans'], 1)
             z_state = torch.clone(init_z_state).repeat(self.params['n_plans'], 1)
+            # 生成候选动作，shape = todo
             candidate_plan = torch.clip_(
                 action_dist.sample(sample_shape=torch.Size([self.params['n_plans']])).to(self.d_type).to(self.device),
                 min=self.params['min_action'], max=self.params['max_action'])
+            # 对每一个时间步的动作进行评估，这个时间步包含对未来观察的预测吧
             for time_step in range(self.params['planning_horizon']):
                 batched_ts_action = candidate_plan[:, time_step, :]
-                # Use learnt dynamics to get next hidden state
+                # Use learnt dynamics to get next hidden state 根据动作得到下一次的确定性隐藏状态
                 h_state = self.world_model.rnn_model(h_state, z_state, batched_ts_action)
-                # Get latent variables from transition model (prior)
+                # Get latent variables from transition model (prior) 得到下一个时间先验状态
                 prior_z = self.world_model.transition_model(h_state)
-                z_state = prior_z.sample()
+                z_state = prior_z.sample() # 先验状态模拟后验状态
+                # 利用确定性状态+模拟本地后验状态预测奖励分布
                 predicted_reward = self.world_model.reward_model(h_state, z_state)
+                # 对奖励进行裁剪，因为可能存在跳帧，则认为跳帧的每次动作的到的奖励都一样，那么跳帧期间的奖励=单帧的奖励*次数
                 sampled_reward = torch.clip(predicted_reward.mean,
                                             min=self.params['min_reward'], max=(1+self.params['action_repeat'])*self.params['max_reward'])
+                # 保存奖励缓冲区
                 reward_buffer.append(sampled_reward)
+            # 展平所有时间步的奖励
             plan_reward = torch.stack(reward_buffer).squeeze().sum(dim=0)
+            # 根据奖励的大小，选择topK个奖励最高的动作分布，得到新的动作分布和均值
+            # 再创建新的动作分布，重新进行动作采样重新进行评估
             chosen_actions = candidate_plan[torch.topk(plan_reward, k=self.params['top_k']).indices]
             action_mu, action_std = chosen_actions.mean(dim=0), chosen_actions.std(dim=0)
             action_dist = Independent(Normal(loc=action_mu, scale=action_std+1e-6), reinterpreted_batch_ndims=2)
@@ -391,4 +465,8 @@ class ReplayBuffer:
         batched_ep_obs = torch.stack(batched_ep_obs).to(self.d_type).to(self.device)
         batched_ep_action = torch.stack(batched_ep_action).to(self.d_type).to(self.device)
         batched_ep_reward = torch.stack(batched_ep_reward).to(self.d_type).to(self.device)
+        # batched_ep_obs shape 是（chunk_length， batch_size， visual_resolution， visual_resolution， channels）
+        # batched_ep_action shape 是（chunk_length， batch_size， action_dim）
+        # batched_ep_reward shape 是（chunk_length， batch_size， 1）
+        # 这里的转换是为了将时间步放在前面，方便后续的训练
         return {'obs': batched_ep_obs.transpose(0, 1), 'action': batched_ep_action.transpose(0, 1), 'reward': batched_ep_reward.transpose(0, 1)}

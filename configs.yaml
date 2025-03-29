@@ -7,21 +7,21 @@ defaults:
   n_seed_episodes: 5                  # number of seed episodes 预热收集多少次游戏完整周期的数据
   action_repeat: 1                    # action repeat (excluding the 1st action)
   eval_gif_freq: 10                   # evaluation gif creation frequency (after how many episodes)
-  vp_eval_freq: 10                    # video-prediction evaluation frequency (after how many episodes)
+  vp_eval_freq: 10                    # video-prediction evaluation frequency (after how many episodes) vp_eval_freq 参数指定了视频预测评估的频率，表示每隔多少个学习步骤进行一次视频预测评估。在这里设置为10，意味着每隔10个学习步骤，模型就会评估其对未来观测的预测能力，并记录预测的视频序列，以便于可视化检查世界模型的预测质量。这与eval_gif_freq类似，但专注于评估模型的预测能力，而不是评估模型的控制策略
 
   # Training
   n_steps: 1000                       # number of learning (model-fitting and data-collection) steps；n_steps 参数指定了整个训练过程中需要执行的“学习步骤”的总数量
   collect_interval: 100               # number of WM updates before collecting a new episode 在每个学习步骤中，模型会先进行一系列的更新（根据 collect_interval 设定的更新次数），然后收集一条新的训练数据（一个完整的 episode）
   batch_size: 50                      # training batch size
   chunk_length: 50                    # length of each sampled episode from experience buffer
-  planning_horizon: 12                # planning horizon
-  plan_optimization_iter: 10          # number of iterations for searching optimized plan
-  n_plans: 1000                       # number of sampled plans per optimization iteration
+  planning_horizon: 12                # planning horizon 参数指定了在规划过程中，评估候选动作序列时所预见的未来时间步数。在基于 Planet 算法的实现中，这个值控制了模型在每次规划时向前预测多少步，以便选择出最优的动作计划。
+  plan_optimization_iter: 10          # number of iterations for searching optimized plan 参数指定了在规划过程中，通过多次迭代优化候选动作序列，以便搜索出最优计划的迭代次数。也就是说，规划器会在10次迭代中不断改进候选计划
+  n_plans: 1000                       # number of sampled plans per optimization iteration 数指定了在每次优化迭代中将采样多少条候选动作序列（计划）。也就是说，在每次规划过程中，会随机采样 1000 个动作序列，然后通过后续的评估机制选择出表现最佳的候选计划，以便在环境中执行
   top_k: 100                          # number of chosen plans to fit the updated belief
   lr: 1e-3                            # learning rate
   adam_epsilon: 1e-4                  # epsilon value for adam optimizer
   max_grad_norm: 1e3                  # upper-limit on grad norm value
-  free_nats: 3.0                      # free nats for kl-divergence from prior to posterior
+  free_nats: 3.0                      # free nats for kl-divergence from prior to posterior 定义了 KL 散度的下限，通常被称为“free nats”技巧
 
   # Environment
   observation_resolution: 64          # resized resolution of the observation

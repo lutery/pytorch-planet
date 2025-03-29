@@ -39,6 +39,7 @@ class RepresentationModel(nn.Module):
         parameters: 整个训练的参数
 
         网络结构比较简单，只是一个全连接网络，输入维度为 h_dim + feat_dim，输出维度为 2 * z_dim。
+        输出的是一个正态分布的均值和标准差，表示当前时刻的潜在状态。
         '''
         super(RepresentationModel, self).__init__()
         self.params = params
@@ -52,6 +53,7 @@ class RepresentationModel(nn.Module):
     def forward(self, h_state, encoded_obs):
         concat_input = torch.concat([h_state, encoded_obs], dim=1)
         mu, pre_std = torch.chunk(self.repr_net(concat_input), chunks=2, dim=1)
+        # 对 pre_std 进行 softplus 操作并加上一个最小标准差，以确保标准差为正。
         std = fnn.softplus(pre_std + 0.55) + self.params['min_std']
         dist_posterior = Independent(Normal(loc=mu, scale=std), reinterpreted_batch_ndims=1)
         return dist_posterior
@@ -82,6 +84,7 @@ class TransitionModel(nn.Module):
         parameters: 整个训练的参数
 
         网络结构比较简单，只是一个全连接网络，输入维度为 h_dim，输出维度为 2 * z_dim。
+        输出的是一个正态分布的均值和标准差，表示当前时刻的潜在状态。
         '''
         super(TransitionModel, self).__init__()
         self.params = params
@@ -94,6 +97,7 @@ class TransitionModel(nn.Module):
 
     def forward(self, h_state):
         mu, pre_std = torch.chunk(self.transition_net(h_state), chunks=2, dim=1)
+        # 对 pre_std 进行 softplus 操作并加上一个最小标准差，以确保标准差为正。
         std = fnn.softplus(pre_std + 0.55) + self.params['min_std']
         dist_prior = Independent(Normal(loc=mu, scale=std), reinterpreted_batch_ndims=1)
         return dist_prior
@@ -105,7 +109,7 @@ class DecoderModel(nn.Module):
         params : 整个训练的参数
 
         网络有一个全连接层，将 h_state 和 z_state 连接起来，然后通过一系列的反卷积层将其解码为与环境观测相对应的重构输出。
-        也就是输出为 3 * 64 * 64 的图像。
+        也就是输出为 3 * 64 * 64 的大小的分布
         '''
         super(DecoderModel, self).__init__()
         self.params = params
